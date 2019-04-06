@@ -1361,6 +1361,11 @@ void ol_ramdump_handler(struct ol_softc *scn)
 			remaining -= 16;
 			reg += 4;
 		}
+                if ((scn->enableFwSelfRecovery || scn->enableRamdumpCollection) &&
+				(scn->fw_ram_dumping == 0)){
+                        kobject_uevent(&scn->adf_dev->dev->kobj, KOBJ_OFFLINE);
+                        vos_set_logp_in_progress(VOS_MODULE_ID_VOSS, FALSE);
+                }
 	}
 	else if ((!scn->enableFwSelfRecovery)&&
 			((pattern & FW_RAMDUMP_PATTERN_MASK) ==
