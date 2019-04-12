@@ -318,8 +318,6 @@ static ssize_t gadget_dev_desc_UDC_store(struct gadget_info *gi,
 	char *name;
 	int ret;
 
-	pr_info("%s: +++\n", __func__);
-
 	name = kstrdup(page, GFP_KERNEL);
 	if (!name)
 		return -ENOMEM;
@@ -332,7 +330,6 @@ static ssize_t gadget_dev_desc_UDC_store(struct gadget_info *gi,
 		ret = unregister_gadget(gi);
 		if (ret)
 			goto err;
-		kfree(name);
 	} else {
 		if (gi->udc_name) {
 			ret = -EBUSY;
@@ -1361,12 +1358,11 @@ static void purge_configs_funcs(struct gadget_info *gi)
 			list_move_tail(&f->list, &cfg->func_list);
 			if (f->unbind) {
 				dev_err(&gi->cdev.gadget->dev, "unbind function"
-						" '%s'/%pK\n", f->name, f);
+						" '%s'/%p\n", f->name, f);
 				f->unbind(c, f);
 			}
 		}
 		c->next_interface_id = 0;
-		memset(c->interface, 0, sizeof(c->interface));
 		c->superspeed = 0;
 		c->highspeed = 0;
 		c->fullspeed = 0;
@@ -1638,7 +1634,6 @@ static const struct usb_gadget_driver configfs_driver_template = {
 	.unbind         = configfs_composite_unbind,
 #ifdef CONFIG_USB_CONFIGFS_UEVENT
 	.setup          = android_setup,
-	.reset          = android_disconnect,
 	.disconnect     = android_disconnect,
 #else
 	.setup          = composite_setup,
@@ -1764,11 +1759,6 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 		pr_info("%s: Connect gadget: enabled=%d, dev->enabled=%d\n",
 				__func__, enabled, dev->enabled);
 		cdev->next_string_id = 0;
-		if(!gadget) {
-			pr_info("%s: Gadget is NULL: %p\n", __func__, gadget);
-			mutex_unlock(&dev->lock);
-			return -ENODEV;
-		}
 		usb_gadget_connect(gadget);
 		dev->enabled = true;
 	} else if (!enabled && dev->enabled) {
@@ -1969,9 +1959,7 @@ void unregister_gadget_item(struct config_item *item)
 {
 	struct gadget_info *gi = to_gadget_info(item);
 
-	mutex_lock(&gi->lock);
 	unregister_gadget(gi);
-	mutex_unlock(&gi->lock);
 }
 EXPORT_SYMBOL_GPL(unregister_gadget_item);
 

@@ -35,7 +35,7 @@
 
 #include "gadget_chips.h"
 
-#include "../function/f_fs.c"
+//#include "../function/f_fs.c"
 #include "../function/f_audio_source.c"
 #include "../function/f_midi.c"
 #include "../function/f_mass_storage.c"
@@ -51,7 +51,6 @@
 #include "../function/rndis.c"
 #include "../function/f_dm.c"
 #include "../function/u_ether.c"
-
 
 MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -166,9 +165,7 @@ EXPORT_SYMBOL_GPL(is_rndis_use);
 void set_usb_enumeration_state(int state);
 void set_usb_enable_state(void);
 #endif
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_CCR_PROTOCOL
-#include "../function/u_ccr.c"
-#endif
+
 /* String Table */
 static struct usb_string strings_dev[] = {
 	[STRING_MANUFACTURER_IDX].s = manufacturer_string,
@@ -240,18 +237,7 @@ static void android_work(struct work_struct *data)
 			dev->sw_connected);
 	spin_lock_irqsave(&cdev->lock, flags);
 	if (cdev->config)
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_CCR_PROTOCOL
-	{
-		if (dev->connected != dev->sw_connected) {
-			uevent_envp = connected;
-			schedule_work(&dev->work);
-		} else {
-#endif
-			uevent_envp = configured;
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_CCR_PROTOCOL
-		}
-	}
-#endif
+		uevent_envp = configured;
 	else if (dev->connected != dev->sw_connected) {
 		uevent_envp = dev->connected ? connected : disconnected;
 #ifdef CONFIG_USB_TYPEC_MANAGER_NOTIFIER
@@ -314,7 +300,7 @@ static void android_disable(struct android_dev *dev)
 		usb_remove_config(cdev, &android_config_driver);
 	}
 }
-
+#if 0
 /*-------------------------------------------------------------------------*/
 /* Supported functions initialization */
 struct functionfs_config {
@@ -471,6 +457,7 @@ static void *functionfs_acquire_dev_callback(const char *dev_name)
 static void functionfs_release_dev_callback(struct ffs_data *ffs_data)
 {
 }
+#endif
 
 struct adb_data {
 	bool opened;
@@ -867,8 +854,6 @@ static ssize_t rndis_manufacturer_store(struct device *dev,
 	struct android_usb_function *f = dev_get_drvdata(dev);
 	struct rndis_function_config *config = f->config;
 
-	if (size < strlen(buf))
-		return -EINVAL;
 	if (size >= sizeof(config->manufacturer))
 		return -EINVAL;
 	if (sscanf(buf, "%s", config->manufacturer) == 1)
@@ -1209,8 +1194,6 @@ static ssize_t mass_storage_vendor_store(struct device *dev,
 	struct android_usb_function *f = dev_get_drvdata(dev);
 	struct mass_storage_function_config *config = f->config;
 
-	if (size < strlen(buf))
-		return -EINVAL;
 	if (size >= sizeof(config->common->vendor_string))
 		return -EINVAL;
 	if (sscanf(buf, "%s", config->common->vendor_string) != 1)
@@ -1239,8 +1222,6 @@ static ssize_t mass_storage_product_store(struct device *dev,
 	struct android_usb_function *f = dev_get_drvdata(dev);
 	struct mass_storage_function_config *config = f->config;
 
-	if (size < strlen(buf))
-		return -EINVAL;
 	if (size >= sizeof(config->common->product_string))
 		return -EINVAL;
 	if (sscanf(buf, "%s", config->common->product_string) != 1)
@@ -1479,7 +1460,7 @@ static struct android_usb_function midi_function = {
 
 
 static struct android_usb_function *supported_functions[] = {
-	&ffs_function,
+//	&ffs_function,
 	&adb_function,
 	&acm_function,
 	&mtp_function,
@@ -1496,9 +1477,6 @@ static struct android_usb_function *supported_functions[] = {
 	&conn_gadget_function,
 #endif
 	&midi_function,
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_CCR_PROTOCOL
-	&ccr_function,
-#endif		
 	NULL
 };
 
@@ -2123,10 +2101,7 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 	if (value < 0)
 		value = terminal_ctrl_request(cdev, c);
 #endif
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_CCR_PROTOCOL
-	if (value < 0)
-		value = ccr_ctrl_request(cdev, c);
-#endif
+
 	/* Special case the accessory function.
 	 * It needs to handle control requests before it is enabled.
 	 */

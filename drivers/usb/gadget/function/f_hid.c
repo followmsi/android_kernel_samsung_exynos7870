@@ -225,7 +225,7 @@ static ssize_t f_hidg_read(struct file *file, char __user *buffer,
 		ret = usb_ep_queue(hidg->out_ep, req, GFP_KERNEL);
 		if (ret < 0) {
 			free_ep_req(hidg->out_ep, req);
-			return ret;
+ 			return ret;
 		}
 	} else {
 		spin_lock_irqsave(&hidg->spinlock, flags);
@@ -385,9 +385,8 @@ static int hidg_setup(struct usb_function *f,
 	value	= __le16_to_cpu(ctrl->wValue);
 	length	= __le16_to_cpu(ctrl->wLength);
 
-	VDBG(cdev,
-	     "%s crtl_request : bRequestType:0x%x bRequest:0x%x Value:0x%x\n",
-	     __func__, ctrl->bRequestType, ctrl->bRequest, value);
+	VDBG(cdev, "hid_setup crtl_request : bRequestType:0x%x bRequest:0x%x "
+		"Value:0x%x\n", ctrl->bRequestType, ctrl->bRequest, value);
 
 	switch ((ctrl->bRequestType << 8) | ctrl->bRequest) {
 	case ((USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8

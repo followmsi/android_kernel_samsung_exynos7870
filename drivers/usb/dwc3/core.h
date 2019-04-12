@@ -221,8 +221,6 @@
 #define DWC3_GUSB3PIPECTL_SUSPHY	(1 << 17)
 
 /* Global TX Fifo Size Register */
-#define DWC31_GTXFIFOSIZ_TXFRAMNUM	BIT(15)		/* DWC_usb31 only */
-#define DWC31_GTXFIFOSIZ_TXFDEF(n)	((n) & 0x7fff)	/* DWC_usb31 only */
 #define DWC3_GTXFIFOSIZ_TXFDEF(n)	((n) & 0xffff)
 #define DWC3_GTXFIFOSIZ_TXFSTADDR(n)	((n) & 0xffff0000)
 
@@ -870,9 +868,6 @@ struct dwc3 {
 	unsigned		adj_sof_accuracy:1;
 	unsigned		is_not_vbus_pad:1;
 	unsigned		sparse_transfer_control:1;
-#ifdef CONFIG_ARGOS
-	u32			irq_affinity_cpu_mask;
-#endif
 };
 
 /* -------------------------------------------------------------------------- */
