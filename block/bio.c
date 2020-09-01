@@ -270,8 +270,8 @@ void bio_init(struct bio *bio)
 {
 	memset(bio, 0, sizeof(*bio));
 	bio->bi_flags = 1 << BIO_UPTODATE;
-	atomic_set(&bio->__bi_remaining, 1);
-	atomic_set(&bio->__bi_cnt, 1);
+	atomic_set(&bio->bi_remaining, 1);
+	atomic_set(&bio->bi_cnt, 1);
 }
 EXPORT_SYMBOL(bio_init);
 
@@ -292,8 +292,8 @@ void bio_reset(struct bio *bio)
 	__bio_free(bio);
 
 	memset(bio, 0, BIO_RESET_BYTES);
-	bio->bi_flags = flags | (1 << BIO_UPTODATE);
-	atomic_set(&bio->__bi_remaining, 1);
+	bio->bi_flags = flags|(1 << BIO_UPTODATE);
+	atomic_set(&bio->bi_remaining, 1);
 }
 EXPORT_SYMBOL(bio_reset);
 
@@ -320,7 +320,7 @@ void bio_chain(struct bio *bio, struct bio *parent)
 
 	bio->bi_private = parent;
 	bio->bi_end_io	= bio_chain_endio;
-	bio_inc_remaining(parent);
+	atomic_inc(&parent->bi_remaining);
 }
 EXPORT_SYMBOL(bio_chain);
 
@@ -524,17 +524,13 @@ EXPORT_SYMBOL(zero_fill_bio);
  **/
 void bio_put(struct bio *bio)
 {
-	if (!bio_flagged(bio, BIO_REFFED))
-		bio_free(bio);
-	else {
-		BIO_BUG_ON(!atomic_read(&bio->__bi_cnt));
+	BIO_BUG_ON(!atomic_read(&bio->bi_cnt));
 
-		/*
-		 * last put frees it
-		 */
-		if (atomic_dec_and_test(&bio->__bi_cnt))
-			bio_free(bio);
-	}
+	/*
+	 * last put frees it
+	 */
+	if (atomic_dec_and_test(&bio->bi_cnt))
+		bio_free(bio);
 }
 EXPORT_SYMBOL(bio_put);
 
@@ -1752,23 +1748,6 @@ void bio_flush_dcache_pages(struct bio *bi)
 EXPORT_SYMBOL(bio_flush_dcache_pages);
 #endif
 
-static inline bool bio_remaining_done(struct bio *bio)
-{
-	/*
-	 * If we're not chaining, then ->__bi_remaining is always 1 and
-	 * we always end io on the first invocation.
-	 */
-	if (!bio_flagged(bio, BIO_CHAIN))
-		return true;
-
-	BUG_ON(atomic_read(&bio->__bi_remaining) <= 0);
-
-	if (atomic_dec_and_test(&bio->__bi_remaining))
-		return true;
-
-	return false;
-}
-
 /**
  * bio_endio - end I/O on a bio
  * @bio:	bio
@@ -1786,13 +1765,15 @@ static inline bool bio_remaining_done(struct bio *bio)
 void bio_endio(struct bio *bio, int error)
 {
 	while (bio) {
+		BUG_ON(atomic_read(&bio->bi_remaining) <= 0);
+
 		if (error)
 			clear_bit(BIO_UPTODATE, &bio->bi_flags);
 		else if (!test_bit(BIO_UPTODATE, &bio->bi_flags))
 			error = -EIO;
 
-		if (unlikely(!bio_remaining_done(bio)))
-			break;
+		if (!atomic_dec_and_test(&bio->bi_remaining))
+			return;
 
 		/*
 		 * Need to have a real endio function for chained bios,
@@ -1825,12 +1806,7 @@ EXPORT_SYMBOL(bio_endio);
  **/
 void bio_endio_nodec(struct bio *bio, int error)
 {
-	/*
-	 * If it's not flagged as a chain, we are not going to dec the count
-	 */
-	if (bio_flagged(bio, BIO_CHAIN))
-		bio_inc_remaining(bio);
-
+	atomic_inc(&bio->bi_remaining);
 	bio_endio(bio, error);
 }
 EXPORT_SYMBOL(bio_endio_nodec);

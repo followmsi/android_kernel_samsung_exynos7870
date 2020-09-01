@@ -47,6 +47,11 @@ struct btrfs_transaction {
 	atomic_t num_writers;
 	atomic_t use_count;
 
+	/*
+	 * true if there is free bgs operations in this transaction
+	 */
+	int have_free_bgs;
+
 	/* Be protected by fs_info->trans_lock when we want to change it. */
 	enum btrfs_trans_state state;
 	struct list_head list;
@@ -172,4 +177,6 @@ int btrfs_wait_marked_extents(struct btrfs_root *root,
 int btrfs_transaction_blocked(struct btrfs_fs_info *info);
 int btrfs_transaction_in_commit(struct btrfs_fs_info *info);
 void btrfs_put_transaction(struct btrfs_transaction *transaction);
+void btrfs_apply_pending_changes(struct btrfs_fs_info *fs_info);
+
 #endif

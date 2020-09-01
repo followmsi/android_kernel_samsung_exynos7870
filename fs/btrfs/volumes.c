@@ -357,7 +357,7 @@ loop_lock:
 		    waitqueue_active(&fs_info->async_submit_wait))
 			wake_up(&fs_info->async_submit_wait);
 
-		BUG_ON(atomic_read(&cur->__bi_cnt) == 0);
+		BUG_ON(atomic_read(&cur->bi_cnt) == 0);
 
 		/*
 		 * if we're doing the sync list, record that our
@@ -707,13 +707,13 @@ static void free_device(struct rcu_head *head)
 
 static int __btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
 {
-	struct btrfs_device *device;
+	struct btrfs_device *device, *tmp;
 
 	if (--fs_devices->opened > 0)
 		return 0;
 
 	mutex_lock(&fs_devices->device_list_mutex);
-	list_for_each_entry(device, &fs_devices->devices, dev_list) {
+	list_for_each_entry_safe(device, tmp, &fs_devices->devices, dev_list) {
 		struct btrfs_device *new_device;
 		struct rcu_string *name;
 
@@ -1071,6 +1071,7 @@ static int contains_pending_extent(struct btrfs_trans_handle *trans,
 {
 	struct extent_map *em;
 	int ret = 0;
+	u64 physical_start = *start;
 
 	list_for_each_entry(em, &trans->transaction->pending_chunks, list) {
 		struct map_lookup *map;
@@ -1078,15 +1079,31 @@ static int contains_pending_extent(struct btrfs_trans_handle *trans,
 
 		map = em->map_lookup;
 		for (i = 0; i < map->num_stripes; i++) {
+			u64 end;
+
 			if (map->stripes[i].dev != device)
 				continue;
-			if (map->stripes[i].physical >= *start + len ||
+			if (map->stripes[i].physical >= physical_start + len ||
 			    map->stripes[i].physical + em->orig_block_len <=
-			    *start)
+			    physical_start)
 				continue;
-			*start = map->stripes[i].physical +
-				em->orig_block_len;
-			ret = 1;
+			/*
+			 * Make sure that while processing the pinned list we do
+			 * not override our *start with a lower value, because
+			 * we can have pinned chunks that fall within this
+			 * device hole and that have lower physical addresses
+			 * than the pending chunks we processed before. If we
+			 * do not take this special care we can end up getting
+			 * 2 pending chunks that start at the same physical
+			 * device offsets because the end offset of a pinned
+			 * chunk can be equal to the start offset of some
+			 * pending chunk.
+			 */
+			end = map->stripes[i].physical + em->orig_block_len;
+			if (end > *start) {
+				*start = end;
+				ret = 1;
+			}
 		}
 	}
 
@@ -1201,8 +1218,14 @@ again:
 			 */
 			if (contains_pending_extent(trans, device,
 						    &search_start,
-						    hole_size))
-				hole_size = 0;
+						    hole_size)) {
+				if (key.offset >= search_start) {
+					hole_size = key.offset - search_start;
+				} else {
+					WARN_ON_ONCE(1);
+					hole_size = 0;
+				}
+			}
 
 			if (hole_size > max_hole_size) {
 				max_hole_start = search_start;
@@ -1316,6 +1339,8 @@ again:
 	if (ret) {
 		btrfs_error(root->fs_info, ret,
 			    "Failed to remove dev extent item");
+	} else {
+		trans->transaction->have_free_bgs = 1;
 	}
 out:
 	btrfs_free_path(path);
@@ -3914,9 +3939,9 @@ int btrfs_create_uuid_tree(struct btrfs_fs_info *fs_info)
 	uuid_root = btrfs_create_tree(trans, fs_info,
 				      BTRFS_UUID_TREE_OBJECTID);
 	if (IS_ERR(uuid_root)) {
-		btrfs_abort_transaction(trans, tree_root,
-					PTR_ERR(uuid_root));
-		return PTR_ERR(uuid_root);
+		ret = PTR_ERR(uuid_root);
+		btrfs_abort_transaction(trans, tree_root, ret);
+		return ret;
 	}
 
 	fs_info->uuid_root = uuid_root;
@@ -6256,10 +6281,11 @@ static int read_one_dev(struct btrfs_root *root,
 		if (!btrfs_test_opt(root, DEGRADED))
 			return -EIO;
 
-		btrfs_warn(root->fs_info, "devid %llu missing", devid);
 		device = add_missing_dev(root, fs_devices, devid, dev_uuid);
 		if (!device)
 			return -ENOMEM;
+		btrfs_warn(root->fs_info, "devid %llu uuid %pU missing",
+				devid, dev_uuid);
 	} else {
 		if (!device->bdev && !btrfs_test_opt(root, DEGRADED))
 			return -EIO;

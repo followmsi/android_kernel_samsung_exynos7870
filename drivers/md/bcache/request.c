@@ -194,10 +194,8 @@ static void bch_data_insert_start(struct closure *cl)
 	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
 	struct bio *bio = op->bio, *n;
 
-	if (atomic_sub_return(bio_sectors(bio), &op->c->sectors_to_gc) < 0) {
-		set_gc_sectors(op->c);
+	if (atomic_sub_return(bio_sectors(bio), &op->c->sectors_to_gc) < 0)
 		wake_up_gc(op->c);
-	}
 
 	if (op->bypass)
 		return bch_data_invalidate(cl);
@@ -626,7 +624,7 @@ static void do_bio_hook(struct search *s, struct bio *orig_bio)
 	bio->bi_end_io		= request_endio;
 	bio->bi_private		= &s->cl;
 
-	bio_cnt_set(bio, 3);
+	atomic_set(&bio->bi_cnt, 3);
 }
 
 static void search_free(struct closure *cl)

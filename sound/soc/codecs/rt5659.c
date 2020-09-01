@@ -33,6 +33,7 @@
 #include <sound/tlv.h>
 #include <sound/rt5659.h>
 
+#include <linux/gcd.h>
 #include "rt5659.h"
 
 static struct regmap *global_regmap;
@@ -1844,7 +1845,7 @@ static const struct snd_kcontrol_new rt5659_snd_controls[] = {
 };
 
 /**
- * set_dmic_clk - Set parameter of dmic.
+ * rt5659_calc_dmic_clk - Calculate the parameter of dmic.
  *
  * @w: DAPM widget.
  * @kcontrol: The kcontrol of this widget.
@@ -1853,18 +1854,18 @@ static const struct snd_kcontrol_new rt5659_snd_controls[] = {
  * Choose dmic clock between 1MHz and 3MHz.
  * It is better for clock to approximate 3MHz.
  */
-static int set_dmic_clk(struct snd_soc_dapm_widget *w,
+static int rt5659_calc_dmic_clk(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_codec *codec = w->codec;
 	struct rt5659_priv *rt5659 = snd_soc_codec_get_drvdata(codec);
-	int div[] = { 2, 3, 4, 6, 8, 12 }, idx =
-	    -EINVAL, i, rate, red, bound, temp;
+	static const int div[] = {2, 3, 4, 6, 8, 12};
+	int idx = -EINVAL, i, rate, red, bound, temp;
 
 	rate = rt5659->lrck[RT5659_AIF1] << 8;
-	red = 3000000 * 12;
+	red = 3072000 * 12;
 	for (i = 0; i < ARRAY_SIZE(div); i++) {
-		bound = div[i] * 3000000;
+		bound = div[i] * 3072000;
 		if (rate > bound)
 			continue;
 		temp = bound - rate;
@@ -3300,7 +3301,7 @@ static const struct snd_soc_dapm_widget rt5659_dapm_widgets[] = {
 	SND_SOC_DAPM_PGA("DMIC2", SND_SOC_NOPM, 0, 0, NULL, 0),
 
 	SND_SOC_DAPM_SUPPLY("DMIC CLK", SND_SOC_NOPM, 0, 0,
-		set_dmic_clk, SND_SOC_DAPM_PRE_PMU),
+		rt5659_calc_dmic_clk, SND_SOC_DAPM_PRE_PMU),
 	SND_SOC_DAPM_SUPPLY("DMIC1 Power", RT5659_DMIC_CTRL_1,
 		RT5659_DMIC_1_EN_SFT, 0, set_dmic_power, SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_SUPPLY("DMIC2 Power", RT5659_DMIC_CTRL_1,
@@ -4052,7 +4053,8 @@ static const struct snd_soc_dapm_route rt5659_dapm_routes[] = {
 
 static int get_clk_info(int sclk, int rate)
 {
-	int i, pd[] = { 1, 2, 3, 4, 6, 8, 12, 16 };
+	int i;
+	static const int pd[] = {1, 2, 3, 4, 6, 8, 12, 16};
 
 	if (sclk <= 0 || rate <= 0)
 		return -EINVAL;
@@ -4266,11 +4268,48 @@ static int rt5659_set_codec_sysclk(struct snd_soc_codec *codec, int clk_id,
 	return 0;
 }
 
+struct pll_calc_map {
+	unsigned int pll_in;
+	unsigned int pll_out;
+	int k;
+	int n;
+	int m;
+	bool m_bp;
+	bool k_bp;
+};
+
+static const struct pll_calc_map pll_preset_table[] = {
+	{19200000,  4096000,  23, 14, 1, false, false},
+	{19200000,  24576000,  3, 30, 3, false, false},
+	{48000000,  3840000,  23,  2, 0, false, false},
+	{3840000,   24576000,  3, 30, 0, true, false},
+	{3840000,   22579200,  3,  5, 0, true, false},
+};
+
+static unsigned int find_best_div(unsigned int in,
+	unsigned int max, unsigned int div)
+{
+	unsigned int d;
+
+	if (in <= max)
+		return 1;
+
+	d = in / max;
+	if (in % max)
+		d++;
+
+	while (div % d != 0)
+		d++;
+
+
+	return d;
+}
+
 /**
  * rt5659_pll_calc - Calculate PLL M/N/K code.
  * @freq_in: external clock provided to the codec.
  * @freq_out: target clock on which the codec works.
- * @pll_code: Pointer to structure with M, N, K and bypass flag.
+ * @pll_code: Pointer to structure with M, N, K, m_bypass and k_bypass flag.
  *
  * Calculate M/N/K code to configure PLL for codec. K is assigned to 2
  * which makes calculation more efficient.
@@ -4281,60 +4320,87 @@ static int rt5659_pll_calc(const unsigned int freq_in,
 	const unsigned int freq_out, struct rt5659_pll_code *pll_code)
 {
 	int max_n = RT5659_PLL_N_MAX, max_m = RT5659_PLL_M_MAX;
-	int k, n = 0, m = 0, red, n_t, m_t, pll_out, in_t;
-	int out_t, red_t = abs(freq_out - freq_in);
+	int i, k, n_t;
+	int k_t, min_k, max_k, n = 0, m = 0, m_t = 0;
+	unsigned int red, pll_out, in_t, out_t, div, div_t;
+	unsigned int red_t = abs(freq_out - freq_in);
+	unsigned int f_in, f_out, f_max;
 	bool m_bypass = false, k_bypass = false;
 
 	if (RT5659_PLL_INP_MAX < freq_in || RT5659_PLL_INP_MIN > freq_in)
 		return -EINVAL;
 
-	k = 100000000 / freq_out - 2;
-	if (k > RT5659_PLL_K_MAX)
-		k = RT5659_PLL_K_MAX;
-
-	if (k < 0) {
-		k = 0;
-		k_bypass = true;
-	}
-
-	for (n_t = 0; n_t <= max_n; n_t++) {
-		in_t = freq_in / (k_bypass ? 1 : (k + 2));
-		pll_out = freq_out / (n_t + 2);
-		if (in_t < 0)
-			continue;
-		if (in_t == pll_out) {
-			m_bypass = true;
-			n = n_t;
+	for (i = 0; i < ARRAY_SIZE(pll_preset_table); i++) {
+		if (freq_in == pll_preset_table[i].pll_in &&
+			freq_out == pll_preset_table[i].pll_out) {
+			k = pll_preset_table[i].k;
+			m = pll_preset_table[i].m;
+			n = pll_preset_table[i].n;
+			m_bypass = pll_preset_table[i].m_bp;
+			k_bypass = pll_preset_table[i].k_bp;
+			pr_debug("Use preset PLL parameter table\n");
 			goto code_find;
 		}
+	}
 
-		red = abs(in_t - pll_out);
-		if (red < red_t) {
-			m_bypass = true;
-			n = n_t;
-			m = m_t;
-			if (red == 0)
-				goto code_find;
-			red_t = red;
-		}
-
-		for (m_t = 0; m_t <= max_m; m_t++) {
-			out_t = in_t / (m_t + 2);
-			red = abs(out_t - pll_out);
-			if (red < red_t) {
-				m_bypass = false;
+	min_k = 80000000 / freq_out - 2;
+	max_k = 150000000 / freq_out - 2;
+	if (max_k > RT5659_PLL_K_MAX)
+		max_k = RT5659_PLL_K_MAX;
+	if (min_k > RT5659_PLL_K_MAX)
+		min_k = max_k = RT5659_PLL_K_MAX;
+	div_t = gcd(freq_in, freq_out);
+	f_max = 0xffffffff / RT5659_PLL_N_MAX;
+	div = find_best_div(freq_in, f_max, div_t);
+	f_in = freq_in / div;
+	f_out = freq_out / div;
+	k = min_k;
+	if (min_k < -1)
+		min_k = -1;
+	for (k_t = min_k; k_t <= max_k; k_t++) {
+		for (n_t = 0; n_t <= max_n; n_t++) {
+			in_t = f_in * (n_t + 2);
+			pll_out = f_out * (k_t + 2);
+			if (in_t == pll_out) {
+				m_bypass = true;
 				n = n_t;
-				m = m_t;
+				k = k_t;
+				goto code_find;
+			}
+			out_t = in_t / (k_t + 2);
+			red = abs(f_out - out_t);
+			if (red < red_t) {
+				m_bypass = true;
+				n = n_t;
+				m = 0;
+				k = k_t;
 				if (red == 0)
 					goto code_find;
 				red_t = red;
 			}
+			for (m_t = 0; m_t <= max_m; m_t++) {
+				out_t = in_t / ((m_t + 2) * (k_t + 2));
+				red = abs(f_out - out_t);
+				if (red < red_t) {
+					m_bypass = false;
+					n = n_t;
+					m = m_t;
+					k = k_t;
+					if (red == 0)
+						goto code_find;
+					red_t = red;
+				}
+			}
 		}
 	}
-
 	pr_debug("%s: only got an approximation\n", __func__);
 
 code_find:
+	if (k == -1) {
+		k_bypass = true;
+		k = 0;
+	}
+
 	pll_code->m_bp = m_bypass;
 	pll_code->k_bp = k_bypass;
 	pll_code->m_code = m;

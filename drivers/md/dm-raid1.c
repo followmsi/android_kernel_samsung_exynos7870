@@ -1256,7 +1256,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio, int error)
 			dm_bio_restore(bd, bio);
 			bio_record->details.bi_bdev = NULL;
 
-			bio_inc_remaining(bio);
+			atomic_inc(&bio->bi_remaining);
 
 			queue_bio(ms, bio, rw);
 			return DM_ENDIO_INCOMPLETE;

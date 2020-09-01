@@ -193,6 +193,7 @@ loop:
 	 * commit the transaction.
 	 */
 	atomic_set(&cur_trans->use_count, 2);
+	cur_trans->have_free_bgs = 0;
 	cur_trans->start_time = get_seconds();
 
 	cur_trans->delayed_refs.href_root = RB_ROOT;
@@ -1885,13 +1886,10 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	}
 
 	/*
-	 * Since the transaction is done, we should set the inode map cache flag
-	 * before any other comming transaction.
+	 * Since the transaction is done, we can apply the pending changes
+	 * before the next transaction.
 	 */
-	if (btrfs_test_opt(root, CHANGE_INODE_CACHE))
-		btrfs_set_opt(root->fs_info->mount_opt, INODE_MAP_CACHE);
-	else
-		btrfs_clear_opt(root->fs_info->mount_opt, INODE_MAP_CACHE);
+	btrfs_apply_pending_changes(root->fs_info);
 
 	/* commit_fs_roots gets rid of all the tree log roots, it is now
 	 * safe to free the root of tree log roots
@@ -1975,6 +1973,9 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans,
 	mutex_unlock(&root->fs_info->tree_log_mutex);
 
 	btrfs_finish_extent_commit(trans, root);
+
+	if (cur_trans->have_free_bgs)
+		btrfs_clear_space_info_full(root->fs_info);
 
 	root->fs_info->last_trans_committed = cur_trans->transid;
 	/*
@@ -2061,4 +2062,33 @@ int btrfs_clean_one_deleted_snapshot(struct btrfs_root *root)
 		ret = btrfs_drop_snapshot(root, NULL, 1, 0);
 
 	return (ret < 0) ? 0 : 1;
+}
+
+void btrfs_apply_pending_changes(struct btrfs_fs_info *fs_info)
+{
+	unsigned long prev;
+	unsigned long bit;
+
+	prev = xchg(&fs_info->pending_changes, 0);
+	if (!prev)
+		return;
+
+	bit = 1 << BTRFS_PENDING_SET_INODE_MAP_CACHE;
+	if (prev & bit)
+		btrfs_set_opt(fs_info->mount_opt, INODE_MAP_CACHE);
+	prev &= ~bit;
+
+	bit = 1 << BTRFS_PENDING_CLEAR_INODE_MAP_CACHE;
+	if (prev & bit)
+		btrfs_clear_opt(fs_info->mount_opt, INODE_MAP_CACHE);
+	prev &= ~bit;
+
+	bit = 1 << BTRFS_PENDING_COMMIT;
+	if (prev & bit)
+		btrfs_debug(fs_info, "pending commit done");
+	prev &= ~bit;
+
+	if (prev)
+		btrfs_warn(fs_info,
+			"unknown pending changes left 0x%lx, ignoring", prev);
 }

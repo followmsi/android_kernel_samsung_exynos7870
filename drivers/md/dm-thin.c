@@ -668,7 +668,7 @@ static void process_prepared_mapping_fail(struct dm_thin_new_mapping *m)
 {
 	if (m->bio) {
 		m->bio->bi_end_io = m->saved_bi_end_io;
-		bio_inc_remaining(m->bio);
+		atomic_inc(&m->bio->bi_remaining);
 	}
 	cell_error(m->tc->pool, m->cell);
 	list_del(&m->list);
@@ -685,7 +685,7 @@ static void process_prepared_mapping(struct dm_thin_new_mapping *m)
 	bio = m->bio;
 	if (bio) {
 		bio->bi_end_io = m->saved_bi_end_io;
-		bio_inc_remaining(bio);
+		atomic_inc(&bio->bi_remaining);
 	}
 
 	if (m->err) {
