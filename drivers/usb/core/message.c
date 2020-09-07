@@ -1196,8 +1196,7 @@ void usb_disable_device(struct usb_device *dev, int skip_ep0)
 			dev->actconfig->interface[i] = NULL;
 		}
 
-		if (dev->usb2_hw_lpm_enabled == 1)
-			usb_set_usb2_hardware_lpm(dev, 0);
+		usb_disable_usb2_hardware_lpm(dev);
 		usb_unlocked_disable_lpm(dev);
 		usb_disable_ltm(dev);
 
@@ -1582,6 +1581,44 @@ static void usb_release_interface(struct device *dev)
 	kfree(intf);
 }
 
+/*
+ * usb_deauthorize_interface - deauthorize an USB interface
+ *
+ * @intf: USB interface structure
+ */
+void usb_deauthorize_interface(struct usb_interface *intf)
+{
+	struct device *dev = &intf->dev;
+
+	device_lock(dev->parent);
+
+	if (intf->authorized) {
+		device_lock(dev);
+		intf->authorized = 0;
+		device_unlock(dev);
+
+		usb_forced_unbind_intf(intf);
+	}
+
+	device_unlock(dev->parent);
+}
+
+/*
+ * usb_authorize_interface - authorize an USB interface
+ *
+ * @intf: USB interface structure
+ */
+void usb_authorize_interface(struct usb_interface *intf)
+{
+	struct device *dev = &intf->dev;
+
+	if (!intf->authorized) {
+		device_lock(dev);
+		intf->authorized = 1; /* authorize interface */
+		device_unlock(dev);
+	}
+}
+
 static int usb_if_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct usb_device *usb_dev;
@@ -1834,6 +1871,7 @@ free_interfaces:
 		intfc = cp->intf_cache[i];
 		intf->altsetting = intfc->altsetting;
 		intf->num_altsetting = intfc->num_altsetting;
+		intf->authorized = !!HCD_INTF_AUTHORIZED(hcd);
 		kref_get(&intfc->ref);
 
 		alt = usb_altnum_to_altsetting(intf, 0);
