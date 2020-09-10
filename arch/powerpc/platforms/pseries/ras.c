@@ -89,6 +89,7 @@ static void handle_system_shutdown(char event_modifier)
 	case EPOW_SHUTDOWN_ON_UPS:
 		pr_emerg("Loss of power reported by firmware, system is "
 			"running on UPS/battery");
+		pr_emerg("Check RTAS error log for details");
 		break;
 
 	case EPOW_SHUTDOWN_LOSS_OF_CRITICAL_FUNCTIONS:

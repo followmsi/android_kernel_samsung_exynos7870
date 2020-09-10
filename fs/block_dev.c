@@ -50,12 +50,21 @@ struct block_device *I_BDEV(struct inode *inode)
 }
 EXPORT_SYMBOL(I_BDEV);
 
-static void bdev_write_inode(struct inode *inode)
+static void bdev_write_inode(struct block_device *bdev)
 {
+	struct inode *inode = bdev->bd_inode;
+	int ret;
+
 	spin_lock(&inode->i_lock);
 	while (inode->i_state & I_DIRTY) {
 		spin_unlock(&inode->i_lock);
-		WARN_ON_ONCE(write_inode_now(inode, true));
+		ret = write_inode_now(inode, true);
+		if (ret) {
+			char name[BDEVNAME_SIZE];
+			pr_warn_ratelimited("VFS: Dirty inode writeback failed "
+					    "for block device %s (err=%d).\n",
+					    bdevname(bdev, name), ret);
+		}
 		spin_lock(&inode->i_lock);
 	}
 	spin_unlock(&inode->i_lock);
@@ -372,7 +381,7 @@ int bdev_read_page(struct block_device *bdev, sector_t sector,
 			struct page *page)
 {
 	const struct block_device_operations *ops = bdev->bd_disk->fops;
-	if (!ops->rw_page)
+	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return -EOPNOTSUPP;
 	return ops->rw_page(bdev, sector + get_start_sect(bdev), page, READ);
 }
@@ -403,7 +412,7 @@ int bdev_write_page(struct block_device *bdev, sector_t sector,
 	int result;
 	int rw = (wbc->sync_mode == WB_SYNC_ALL) ? WRITE_SYNC : WRITE;
 	const struct block_device_operations *ops = bdev->bd_disk->fops;
-	if (!ops->rw_page)
+	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return -EOPNOTSUPP;
 	set_page_writeback(page);
 	result = ops->rw_page(bdev, sector + get_start_sect(bdev), page, rw);
@@ -1443,7 +1452,7 @@ static void __blkdev_put(struct block_device *bdev, fmode_t mode, int for_part)
 		 * ->release can cause the queue to disappear, so flush all
 		 * dirty data before.
 		 */
-		bdev_write_inode(bdev->bd_inode);
+		bdev_write_inode(bdev);
 	}
 	if (bdev->bd_contains == bdev) {
 		if (disk->fops->release)
