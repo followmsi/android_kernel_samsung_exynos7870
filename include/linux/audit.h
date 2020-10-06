@@ -26,6 +26,10 @@
 #include <linux/sched.h>
 #include <linux/ptrace.h>
 #include <uapi/linux/audit.h>
+#include <linux/tty.h>
+
+#define AUDIT_INO_UNSET ((unsigned long)-1)
+#define AUDIT_DEV_UNSET ((dev_t)-1)
 
 struct audit_sig_info {
 	uid_t		uid;
@@ -231,6 +235,23 @@ static inline unsigned int audit_get_sessionid(struct task_struct *tsk)
 	return tsk->sessionid;
 }
 
+static inline struct tty_struct *audit_get_tty(struct task_struct *tsk)
+{
+	struct tty_struct *tty = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&tsk->sighand->siglock, flags);
+	if (tsk->signal)
+		tty = tty_kref_get(tsk->signal->tty);
+	spin_unlock_irqrestore(&tsk->sighand->siglock, flags);
+	return tty;
+}
+
+static inline void audit_put_tty(struct tty_struct *tty)
+{
+	tty_kref_put(tty);
+}
+
 extern void __audit_ipc_obj(struct kern_ipc_perm *ipcp);
 extern void __audit_ipc_set_perm(unsigned long qbytes, uid_t uid, gid_t gid, umode_t mode);
 extern void __audit_bprm(struct linux_binprm *bprm);
@@ -401,6 +422,12 @@ static inline unsigned int audit_get_sessionid(struct task_struct *tsk)
 {
 	return -1;
 }
+static inline struct tty_struct *audit_get_tty(struct task_struct *tsk)
+{
+	return NULL;
+}
+static inline void audit_put_tty(struct tty_struct *tty)
+{ }
 static inline void audit_ipc_obj(struct kern_ipc_perm *ipcp)
 { }
 static inline void audit_ipc_set_perm(unsigned long qbytes, uid_t uid,
@@ -468,7 +495,7 @@ extern struct audit_buffer *audit_log_start(struct audit_context *ctx, gfp_t gfp
 extern __printf(2, 3)
 void audit_log_format(struct audit_buffer *ab, const char *fmt, ...);
 extern void		    audit_log_end(struct audit_buffer *ab);
-extern int		    audit_string_contains_control(const char *string,
+extern bool		    audit_string_contains_control(const char *string,
 							  size_t len);
 extern void		    audit_log_n_hex(struct audit_buffer *ab,
 					  const unsigned char *buf,
