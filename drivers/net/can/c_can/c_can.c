@@ -35,6 +35,7 @@
 #include <linux/list.h>
 #include <linux/io.h>
 #include <linux/pm_runtime.h>
+#include <linux/pinctrl/consumer.h>
 
 #include <linux/can.h>
 #include <linux/can/dev.h>
@@ -210,18 +211,6 @@ static const struct can_bittiming_const c_can_bittiming_const = {
 	.brp_max = 1024,	/* 6-bit BRP field + 4-bit BRPE field*/
 	.brp_inc = 1,
 };
-
-static inline void c_can_pm_runtime_enable(const struct c_can_priv *priv)
-{
-	if (priv->device)
-		pm_runtime_enable(priv->device);
-}
-
-static inline void c_can_pm_runtime_disable(const struct c_can_priv *priv)
-{
-	if (priv->device)
-		pm_runtime_disable(priv->device);
-}
 
 static inline void c_can_pm_runtime_get_sync(const struct c_can_priv *priv)
 {
@@ -644,6 +633,7 @@ static int c_can_start(struct net_device *dev)
 {
 	struct c_can_priv *priv = netdev_priv(dev);
 	int err;
+	struct pinctrl *p;
 
 	/* basic c_can configuration */
 	err = c_can_chip_config(dev);
@@ -655,6 +645,13 @@ static int c_can_start(struct net_device *dev)
 		IF_COMM_RCV_LOW : IF_COMM_RCV_HIGH;
 
 	priv->can.state = CAN_STATE_ERROR_ACTIVE;
+
+	/* Attempt to use "active" if available else use "default" */
+	p = pinctrl_get_select(priv->device, "active");
+	if (!IS_ERR(p))
+		pinctrl_put(p);
+	else
+		pinctrl_pm_select_default_state(priv->device);
 
 	return 0;
 }
@@ -668,6 +665,8 @@ static void c_can_stop(struct net_device *dev)
 	/* put ctrl to init on stop to end ongoing transmission */
 	priv->write_reg(priv, C_CAN_CTRL_REG, CONTROL_INIT);
 
+	/* deactivate pins */
+	pinctrl_pm_select_sleep_state(dev->dev.parent);
 	priv->can.state = CAN_STATE_STOPPED;
 }
 
@@ -1310,31 +1309,28 @@ static const struct net_device_ops c_can_netdev_ops = {
 
 int register_c_can_dev(struct net_device *dev)
 {
-	struct c_can_priv *priv = netdev_priv(dev);
 	int err;
 
-	c_can_pm_runtime_enable(priv);
+	/* Deactivate pins to prevent DRA7 DCAN IP from being
+	 * stuck in transition when module is disabled.
+	 * Pins are activated in c_can_start() and deactivated
+	 * in c_can_stop()
+	 */
+	pinctrl_pm_select_sleep_state(dev->dev.parent);
 
 	dev->flags |= IFF_ECHO;	/* we support local echo */
 	dev->netdev_ops = &c_can_netdev_ops;
 
 	err = register_candev(dev);
-	if (err)
-		c_can_pm_runtime_disable(priv);
-	else
+	if (!err)
 		devm_can_led_init(dev);
-
 	return err;
 }
 EXPORT_SYMBOL_GPL(register_c_can_dev);
 
 void unregister_c_can_dev(struct net_device *dev)
 {
-	struct c_can_priv *priv = netdev_priv(dev);
-
 	unregister_candev(dev);
-
-	c_can_pm_runtime_disable(priv);
 }
 EXPORT_SYMBOL_GPL(unregister_c_can_dev);
 
