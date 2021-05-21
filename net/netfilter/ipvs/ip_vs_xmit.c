@@ -343,7 +343,7 @@ __ip_vs_get_out_rt(int skb_af, struct sk_buff *skb, struct ip_vs_dest *dest,
 	skb_dst_drop(skb);
 	if (noref) {
 		if (!local)
-			skb_dst_set_noref_force(skb, &rt->dst);
+			skb_dst_set_noref(skb, &rt->dst);
 		else
 			skb_dst_set(skb, dst_clone(&rt->dst));
 	} else
@@ -491,7 +491,7 @@ __ip_vs_get_out_rt_v6(int skb_af, struct sk_buff *skb, struct ip_vs_dest *dest,
 	skb_dst_drop(skb);
 	if (noref) {
 		if (!local)
-			skb_dst_set_noref_force(skb, &rt->dst);
+			skb_dst_set_noref(skb, &rt->dst);
 		else
 			skb_dst_set(skb, dst_clone(&rt->dst));
 	} else
@@ -505,6 +505,13 @@ err_put:
 	return -1;
 
 err_unreach:
+	/* The ip6_link_failure function requires the dev field to be set
+	 * in order to get the net (further for the sake of fwmark
+	 * reflection).
+	 */
+	if (!skb->dev)
+		skb->dev = skb_dst(skb)->dev;
+
 	dst_link_failure(skb);
 	return -1;
 }

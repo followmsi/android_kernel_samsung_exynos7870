@@ -533,6 +533,11 @@ struct sk_buff {
 		};
 		struct rb_node	rbnode; /* used in netem & tcp stack */
 	};
+
+	union {
+		int			ip_defrag_offset;
+	};
+
 	struct sock		*sk;
 	struct net_device	*dev;
 
@@ -732,9 +737,6 @@ static inline void skb_dst_set(struct sk_buff *skb, struct dst_entry *dst)
 	skb->_skb_refdst = (unsigned long)dst;
 }
 
-void __skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst,
-			 bool force);
-
 /**
  * skb_dst_set_noref - sets skb dst, hopefully, without taking reference
  * @skb: buffer
@@ -747,24 +749,8 @@ void __skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst,
  */
 static inline void skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst)
 {
-	__skb_dst_set_noref(skb, dst, false);
-}
-
-/**
- * skb_dst_set_noref_force - sets skb dst, without taking reference
- * @skb: buffer
- * @dst: dst entry
- *
- * Sets skb dst, assuming a reference was not taken on dst.
- * No reference is taken and no dst_release will be called. While for
- * cached dsts deferred reclaim is a basic feature, for entries that are
- * not cached it is caller's job to guarantee that last dst_release for
- * provided dst happens when nobody uses it, eg. after a RCU grace period.
- */
-static inline void skb_dst_set_noref_force(struct sk_buff *skb,
-					   struct dst_entry *dst)
-{
-	__skb_dst_set_noref(skb, dst, true);
+	WARN_ON(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
+	skb->_skb_refdst = (unsigned long)dst | SKB_DST_NOREF;
 }
 
 /**
@@ -2179,7 +2165,7 @@ static inline void __skb_queue_purge(struct sk_buff_head *list)
 		kfree_skb(skb);
 }
 
-void skb_rbtree_purge(struct rb_root *root);
+unsigned int skb_rbtree_purge(struct rb_root *root);
 
 void *netdev_alloc_frag(unsigned int fragsz);
 
@@ -2657,6 +2643,8 @@ static inline void skb_postpull_rcsum(struct sk_buff *skb,
 
 unsigned char *skb_pull_rcsum(struct sk_buff *skb, unsigned int len);
 
+int pskb_trim_rcsum_slow(struct sk_buff *skb, unsigned int len);
+
 /**
  *	pskb_trim_rcsum - trim received skb and update checksum
  *	@skb: buffer to trim
@@ -2670,9 +2658,7 @@ static inline int pskb_trim_rcsum(struct sk_buff *skb, unsigned int len)
 {
 	if (likely(len >= skb->len))
 		return 0;
-	if (skb->ip_summed == CHECKSUM_COMPLETE)
-		skb->ip_summed = CHECKSUM_NONE;
-	return __pskb_trim(skb, len);
+	return pskb_trim_rcsum_slow(skb, len);
 }
 
 #define rb_to_skb(rb) rb_entry_safe(rb, struct sk_buff, rbnode)

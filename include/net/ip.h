@@ -476,6 +476,11 @@ static __inline__ void inet_reset_saddr(struct sock *sk)
 
 #endif
 
+static inline unsigned int ipv4_addr_hash(__be32 ip)
+{
+	return (__force unsigned int) ip;
+}
+
 bool ip_call_ra_chain(struct sk_buff *skb);
 
 /*
@@ -497,6 +502,16 @@ enum ip_defrag_users {
 	IP_DEFRAG_AF_PACKET,
 	IP_DEFRAG_MACVLAN,
 };
+
+/* Return true if the value of 'user' is between 'lower_bond'
+ * and 'upper_bond' inclusively.
+ */
+static inline bool ip_defrag_user_in_between(u32 user,
+					     enum ip_defrag_users lower_bond,
+					     enum ip_defrag_users upper_bond)
+{
+	return user >= lower_bond && user <= upper_bond;
+}
 
 int ip_defrag(struct sk_buff *skb, u32 user);
 #ifdef CONFIG_INET

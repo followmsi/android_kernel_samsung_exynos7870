@@ -173,13 +173,23 @@ static void ipq_kill(struct ipq *ipq)
 	inet_frag_kill(&ipq->q, &ip4_frags);
 }
 
+static bool frag_expire_skip_icmp(u32 user)
+{
+	return user == IP_DEFRAG_AF_PACKET ||
+	       ip_defrag_user_in_between(user, IP_DEFRAG_CONNTRACK_IN,
+					 __IP_DEFRAG_CONNTRACK_IN_END);
+}
+
 /*
  * Oops, a fragment queue timed out.  Kill it and send an ICMP reply.
  */
 static void ip_expire(unsigned long arg)
 {
-	struct ipq *qp;
+	const struct iphdr *iph;
+	struct sk_buff *head;
 	struct net *net;
+	struct ipq *qp;
+	int err;
 
 	qp = container_of((struct inet_frag_queue *) arg, struct ipq, q);
 	net = container_of(qp->q.net, struct net, ipv4.frags);
@@ -193,48 +203,38 @@ static void ip_expire(unsigned long arg)
 	ipq_kill(qp);
 	IP_INC_STATS_BH(net, IPSTATS_MIB_REASMFAILS);
 
-	if (!(qp->q.flags & INET_FRAG_EVICTED)) {
-		struct sk_buff *clone, *head = qp->q.fragments;
-		const struct iphdr *iph;
-		int err;
+	head = qp->q.fragments;
 
-		IP_INC_STATS_BH(net, IPSTATS_MIB_REASMTIMEOUT);
+	IP_INC_STATS_BH(net, IPSTATS_MIB_REASMTIMEOUT);
 
-		if (!(qp->q.flags & INET_FRAG_FIRST_IN) || !qp->q.fragments)
-			goto out;
+	if (!(qp->q.flags & INET_FRAG_FIRST_IN) || !head)
+		goto out;
 
-		head->dev = dev_get_by_index_rcu(net, qp->iif);
-		if (!head->dev)
-			goto out;
+	head->dev = dev_get_by_index_rcu(net, qp->iif);
+	if (!head->dev)
+		goto out;
 
 
-		/* skb has no dst, perform route lookup again */
-		iph = ip_hdr(head);
-		err = ip_route_input_noref(head, iph->daddr, iph->saddr,
+	/* skb has no dst, perform route lookup again */
+	iph = ip_hdr(head);
+	err = ip_route_input_noref(head, iph->daddr, iph->saddr,
 					   iph->tos, head->dev);
-		if (err)
-			goto out;
+	if (err)
+		goto out;
 
-		/* Only an end host needs to send an ICMP
-		 * "Fragment Reassembly Timeout" message, per RFC792.
-		 */
-		if (qp->user == IP_DEFRAG_AF_PACKET ||
-		    ((qp->user >= IP_DEFRAG_CONNTRACK_IN) &&
-		     (qp->user <= __IP_DEFRAG_CONNTRACK_IN_END) &&
-		     (skb_rtable(head)->rt_type != RTN_LOCAL)))
-			goto out;
+	/* Only an end host needs to send an ICMP
+	 * "Fragment Reassembly Timeout" message, per RFC792.
+	 */
+	if (frag_expire_skip_icmp(qp->user) &&
+	    (skb_rtable(head)->rt_type != RTN_LOCAL))
+		goto out;
 
-		clone = skb_clone(head, GFP_ATOMIC);
+	skb_get(head);
+	spin_unlock(&qp->q.lock);
+	icmp_send(head, ICMP_TIME_EXCEEDED, ICMP_EXC_FRAGTIME, 0);
+	kfree_skb(head);
+	goto out_rcu_unlock;
 
-		/* Send an ICMP "Fragment Reassembly Timeout" message. */
-		if (clone) {
-			spin_unlock(&qp->q.lock);
-			icmp_send(clone, ICMP_TIME_EXCEEDED,
-				  ICMP_EXC_FRAGTIME, 0);
-			consume_skb(clone);
-			goto out_rcu_unlock;
-		}
-	}
 out:
 	spin_unlock(&qp->q.lock);
 out_rcu_unlock:
@@ -873,8 +873,6 @@ static struct pernet_operations ip4_frags_ops = {
 
 void __init ipfrag_init(void)
 {
-	ip4_frags_ctl_register();
-	register_pernet_subsys(&ip4_frags_ops);
 	ip4_frags.hashfn = ip4_hashfn;
 	ip4_frags.constructor = ip4_frag_init;
 	ip4_frags.destructor = ip4_frag_free;
@@ -885,4 +883,6 @@ void __init ipfrag_init(void)
 	ip4_frags.frags_cache_name = ip_frag_cache_name;
 	if (inet_frags_init(&ip4_frags))
 		panic("IP: failed to allocate ip4_frags cache\n");
+	ip4_frags_ctl_register();
+	register_pernet_subsys(&ip4_frags_ops);
 }
