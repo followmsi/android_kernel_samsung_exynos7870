@@ -670,7 +670,8 @@ static void nfs_inode_add_request(struct inode *inode, struct nfs_page *req)
 	nfs_lock_request(req);
 
 	spin_lock(&inode->i_lock);
-	if (!nfsi->npages && NFS_PROTO(inode)->have_delegation(inode, FMODE_WRITE))
+	if (!nfsi->nrequests &&
+	    NFS_PROTO(inode)->have_delegation(inode, FMODE_WRITE))
 		inode->i_version++;
 	/*
 	 * Swap-space should not get truncated. Hence no need to plug the race
@@ -681,9 +682,11 @@ static void nfs_inode_add_request(struct inode *inode, struct nfs_page *req)
 		SetPagePrivate(req->wb_page);
 		set_page_private(req->wb_page, (unsigned long)req);
 	}
-	nfsi->npages++;
+	nfsi->nrequests++;
 	/* this a head request for a page group - mark it as having an
-	 * extra reference so sub groups can follow suit */
+	 * extra reference so sub groups can follow suit.
+	 * This flag also informs pgio layer when to bump nrequests when
+	 * adding subrequests. */
 	WARN_ON(test_and_set_bit(PG_INODE_REF, &req->wb_flags));
 	kref_get(&req->wb_kref);
 	spin_unlock(&inode->i_lock);
@@ -709,7 +712,11 @@ static void nfs_inode_remove_request(struct nfs_page *req)
 			wake_up_page(head->wb_page, PG_private);
 			clear_bit(PG_MAPPED, &head->wb_flags);
 		}
-		nfsi->npages--;
+		nfsi->nrequests--;
+		spin_unlock(&inode->i_lock);
+	} else {
+		spin_lock(&inode->i_lock);
+		nfsi->nrequests--;
 		spin_unlock(&inode->i_lock);
 	}
 
@@ -1338,6 +1345,36 @@ static int nfs_should_remove_suid(const struct inode *inode)
 	return 0;
 }
 
+static void nfs_writeback_check_extend(struct nfs_pgio_header *hdr,
+		struct nfs_fattr *fattr)
+{
+	struct nfs_pgio_args *argp = &hdr->args;
+	struct nfs_pgio_res *resp = &hdr->res;
+
+	if (!(fattr->valid & NFS_ATTR_FATTR_SIZE))
+		return;
+	if (argp->offset + resp->count != fattr->size)
+		return;
+	if (nfs_size_to_loff_t(fattr->size) < i_size_read(hdr->inode))
+		return;
+	/* Set attribute barrier */
+	nfs_fattr_set_barrier(fattr);
+}
+
+void nfs_writeback_update_inode(struct nfs_pgio_header *hdr)
+{
+	struct nfs_fattr *fattr = hdr->res.fattr;
+	struct inode *inode = hdr->inode;
+
+	if (fattr == NULL)
+		return;
+	spin_lock(&inode->i_lock);
+	nfs_writeback_check_extend(hdr, fattr);
+	nfs_post_op_update_inode_force_wcc_locked(inode, fattr);
+	spin_unlock(&inode->i_lock);
+}
+EXPORT_SYMBOL_GPL(nfs_writeback_update_inode);
+
 /*
  * This function is called when the WRITE call is complete.
  */
@@ -1741,7 +1778,7 @@ static int nfs_commit_unstable_pages(struct inode *inode, struct writeback_contr
 		/* Don't commit yet if this is a non-blocking flush and there
 		 * are a lot of outstanding writes for this mapping.
 		 */
-		if (nfsi->commit_info.ncommit <= (nfsi->npages >> 1))
+		if (nfsi->commit_info.ncommit <= (nfsi->nrequests >> 1))
 			goto out_mark_dirty;
 
 		/* don't wait for the COMMIT response */
